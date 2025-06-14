@@ -1,0 +1,9 @@
+boto3
+langchain-aws
+langchain
+python-dotenv
+tenacity
+amazon-textract-textractor
+pandas
+pydantic
+tqdm
