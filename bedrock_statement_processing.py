@@ -246,7 +246,7 @@ class StatementProcessor:
                 transactions = transaction_prompt.format(transaction_details=input['transaction_details'])
                 metadata_response = self.make_api_call(metadata, StatementModelMetadata)
                 transaction_response = self.make_api_call(transactions, StatementModelTransactions)
-                merged_response = json.loads(metadata_response.model_dump_json()) | json.loads(transaction_response.model_dump_json())
+                merged_response = {**json.loads(metadata_response.model_dump_json()), **json.loads(transaction_response.model_dump_json())}
                 all_response.append(merged_response)
                 self.logger.info("Successfully processed input batch")
                 
@@ -454,8 +454,13 @@ class StatementProcessor:
             self.logger.error("Error creating DataFrame: %s", str(e))
             raise
 
+def get_current_model_id():
+    """Return the current MODEL_ID from the environment."""
+    return MODEL_ID
+
 def main():
     try:
+        print(f"[INFO] Using MODEL_ID: {get_current_model_id()}")
         processor = StatementProcessor(
             bucket_name=BUCKET_NAME,
             pdf_prefix=PDF_BUCKET_PREFIX,
