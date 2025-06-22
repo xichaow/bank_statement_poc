@@ -2,7 +2,7 @@ import boto3
 from langchain_aws import ChatBedrock
 from langchain.prompts import PromptTemplate
 from botocore.exceptions import ClientError
-from typing import List
+from typing import List, Optional
 from pathlib import Path
 import os
 import time
@@ -69,7 +69,7 @@ You must think step by step as below:
 </Thinking>
 
 <Output Requirements>
-card_issuer: (e.g., Visa, Mastercard, American Express, etc.)
+card_issuer: (e.g., ANZ, CBA, Westpac, NAB, etc.)
 card_type: (e.g., Gold, Platinum, Standard, etc.)
 account_number: (masked or partial account number)
 statement_period: (billing period dates)
@@ -110,18 +110,19 @@ You must think step by step as below:
 </Thinking>
 
 <Output Requirements>
+card_issuer: (the name of the bank or issuer as shown in the statement, e.g., ANZ, CBA, Westpac, NAB, etc.)
 transaction_details: [transaction_date,
           merchant_name,
           transaction_description,
           transaction_amount,
           transaction_type, (PURCHASE, PAYMENT, CASH_ADVANCE, FEE, INTEREST, etc.)
-          category, (FOOD, TRAVEL, SHOPPING, UTILITIES, etc.)
-          reference_number]
+          category, (FOOD, TRAVEL, SHOPPING, UTILITIES, etc.)]
 confidence_score:
-</Output Requirements>
+# For any numeric field you cannot determine, output null (not <UNKNOWN> or a string)
+<Output Requirements>
 
 Please extract all key details from given credit card statement. 
-transaction_details table:
+transaction_details table or text:
 {transaction_details}
 """
 
@@ -146,16 +147,16 @@ class StatementModelMetadata(BaseModel):
     statement_period: str = Field(description="Billing period dates" + unknown)
     statement_date: str = Field(description="Date when statement was generated, format DD-MM-YYYY" + unknown)
     payment_due_date: str = Field(description="Payment due date, format DD-MM-YYYY" + unknown)
-    previous_balance: float = Field(description="Balance from previous statement")
-    payments_credits: float = Field(description="Total payments and credits")
-    purchases_charges: float = Field(description="Total purchases and charges")
-    cash_advances: float = Field(description="Total cash advances")
-    fees_charges: float = Field(description="Total fees and charges")
-    interest_charges: float = Field(description="Total interest charges")
-    new_balance: float = Field(description="New balance after all transactions")
-    minimum_payment: float = Field(description="Minimum payment due")
-    credit_limit: float = Field(description="Total credit limit")
-    available_credit: float = Field(description="Available credit remaining")
+    previous_balance: Optional[float] = Field(description="Balance from previous statement")
+    payments_credits: Optional[float] = Field(description="Total payments and credits")
+    purchases_charges: Optional[float] = Field(description="Total purchases and charges")
+    cash_advances: Optional[float] = Field(description="Total cash advances")
+    fees_charges: Optional[float] = Field(description="Total fees and charges")
+    interest_charges: Optional[float] = Field(description="Total interest charges")
+    new_balance: Optional[float] = Field(description="New balance after all transactions")
+    minimum_payment: Optional[float] = Field(description="Minimum payment due")
+    credit_limit: Optional[float] = Field(description="Total credit limit")
+    available_credit: Optional[float] = Field(description="Available credit remaining")
 
 class StatementModelTransactions(BaseModel):
     thinking_process_transactions: str = Field(description="Section containing thinking process information")
@@ -194,16 +195,41 @@ class StatementProcessor:
             features=[TextractFeatures.LAYOUT, TextractFeatures.TABLES, TextractFeatures.FORMS],
         )
 
-        if transaction_output_format == 'html':
-            transaction_table = document.tables.to_html(config)
-        elif transaction_output_format == 'markdown':
-            transaction_table = document.tables.to_markdown()
+        # Aggregate all tables from all pages
+        if len(document.tables) > 0:
+            self.logger.info(f"Found {len(document.tables)} tables in document.")
+            for i, table in enumerate(document.tables):
+                if hasattr(table, 'nrows') and hasattr(table, 'ncols'):
+                    self.logger.info(f"Table {i+1} size: {table.nrows} rows x {table.ncols} columns")
+                else:
+                    self.logger.info(f"Table {i+1} summary: {str(table)[:100]}")
+            if transaction_output_format == 'html':
+                all_tables = "".join([table.to_html() for table in document.tables])
+                transaction_table = all_tables
+            elif transaction_output_format == 'markdown':
+                all_tables = "\n\n".join([table.to_markdown() for table in document.tables])
+                transaction_table = all_tables
+            else:
+                self.logger.warning(f"Unknown transaction_output_format: {transaction_output_format}. Defaulting to HTML.")
+                all_tables = "".join([table.to_html() for table in document.tables])
+                transaction_table = all_tables
+            self.logger.info(f"First 500 chars of transaction_table: {transaction_table[:500]}")
         else:
-            self.logger.warning(f"Unknown transaction_output_format: {transaction_output_format}. Defaulting to HTML.")
-            transaction_table = document.tables.to_html(config)
-            
-        statement_metadata = document.key_values.get_text()
-        input_pair['statement_metadata'] = statement_metadata
+            self.logger.warning("No tables found in document. Falling back to lines of text.")
+            # Fallback: extract all lines of text
+            all_lines = []
+            for page in document.pages:
+                if hasattr(page, 'lines'):
+                    all_lines.extend([line.text for line in page.lines])
+            transaction_table = "\n".join(all_lines)
+            self.logger.info(f"First 500 chars of transaction_table (lines fallback): {transaction_table[:500]}")
+        
+        # Aggregate all key-values from all pages (if needed)
+        if hasattr(document.key_values, 'get_text'):
+            invoice_metadata = document.key_values.get_text()
+        else:
+            invoice_metadata = "\n".join([kv.get_text() for kv in document.key_values])
+        input_pair['statement_metadata'] = invoice_metadata
         input_pair['transaction_details'] = transaction_table
         return input_pair
 
@@ -263,7 +289,7 @@ class StatementProcessor:
         saved_files = self.save_json_responses(files, all_response)
         uploaded_files = self.upload_json_to_s3('output_json')
         
-        return self.create_dataframe(all_response)
+        return self.create_dataframe(all_response, files)
 
     def list_pdf_files(self) -> List[str]:
         if not self.bucket_name:
@@ -399,33 +425,35 @@ class StatementProcessor:
             self.logger.error("Unexpected error during S3 upload: %s", str(e))
             raise
 
-    def create_dataframe(self, all_response):
+    def detect_bank_name_from_text(self, text):
+        text = text.lower()
+        if 'anz' in text:
+            return 'anz'
+        elif 'commonwealth' in text or 'cba' in text:
+            return 'cba'
+        elif 'nab' in text or 'national australia bank' in text:
+            return 'nab'
+        elif 'westpac' in text:
+            return 'westpac'
+        else:
+            return 'unknown'
+
+    def create_dataframe(self, all_response, files=None):
         self.logger.info("Creating DataFrame from responses")
         try:
             # Flatten the nested structure for DataFrame creation
             flattened_data = []
-            for response in all_response:
+            for idx, response in enumerate(all_response):
+                # Prefer card_issuer from model output, fallback to metadata detection
+                card_issuer = response.get('card_issuer', '')
+                if not card_issuer:
+                    statement_metadata = response.get('statement_metadata', '')
+                    card_issuer = self.detect_bank_name_from_text(statement_metadata)
                 # Extract metadata
                 metadata = {
-                    'card_issuer': response.get('card_issuer', ''),
-                    'card_type': response.get('card_type', ''),
-                    'account_number': response.get('account_number', ''),
-                    'statement_period': response.get('statement_period', ''),
-                    'statement_date': response.get('statement_date', ''),
-                    'payment_due_date': response.get('payment_due_date', ''),
-                    'previous_balance': response.get('previous_balance', 0.0),
-                    'payments_credits': response.get('payments_credits', 0.0),
-                    'purchases_charges': response.get('purchases_charges', 0.0),
-                    'cash_advances': response.get('cash_advances', 0.0),
-                    'fees_charges': response.get('fees_charges', 0.0),
-                    'interest_charges': response.get('interest_charges', 0.0),
-                    'new_balance': response.get('new_balance', 0.0),
-                    'minimum_payment': response.get('minimum_payment', 0.0),
-                    'credit_limit': response.get('credit_limit', 0.0),
-                    'available_credit': response.get('available_credit', 0.0),
-                    'confidence_score': response.get('confidence_score', 0)
+                    'confidence_score': response.get('confidence_score', 0),
+                    'card_issuer': card_issuer
                 }
-                
                 # Extract transactions
                 transactions = response.get('transaction_details', [])
                 if transactions:
@@ -437,15 +465,28 @@ class StatementProcessor:
                             'transaction_description': transaction.get('transaction_description', ''),
                             'transaction_amount': transaction.get('transaction_amount', 0.0),
                             'transaction_type': transaction.get('transaction_type', ''),
-                            'category': transaction.get('category', ''),
-                            'reference_number': transaction.get('reference_number', '')
+                            'category': transaction.get('category', '')
                         })
                         flattened_data.append(row)
                 else:
                     # If no transactions, still include the metadata
                     flattened_data.append(metadata)
-            
             df = pd.DataFrame(flattened_data)
+            # Filter out records with confidence_score lower than 2
+            df = df[df['confidence_score'] >= 2]
+            # Only keep the columns needed for credit card statement analysis
+            columns_to_keep = [
+                'confidence_score',
+                'card_issuer',
+                'transaction_date',
+                'merchant_name',
+                'transaction_description',
+                'transaction_amount',
+                'transaction_type',
+                'category'
+            ]
+            # Only keep columns that exist in the DataFrame
+            df = df[[col for col in columns_to_keep if col in df.columns]]
             df.to_csv('outputs.csv', index=False)
             self.logger.info("DataFrame created and saved to outputs.csv")
             return df

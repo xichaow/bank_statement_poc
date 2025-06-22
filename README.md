@@ -2,6 +2,8 @@
 
 An automated system for processing credit card statements using AWS Bedrock, Amazon Textract, and LangChain. This system extracts information from PDF credit card statements, processes them using AI, and generates structured data output.
 
+
+
 ## Features
 
 - PDF credit card statement processing using Amazon Textract for accurate data extraction
@@ -34,7 +36,7 @@ Create a `.env` file with the following configurations:
 ```
 BUCKET_NAME=your-bucket-name          # S3 bucket for storing statements and output
 PDF_BUCKET_PREFIX=statements          # Prefix for input PDF files
-BUCKET_REGION=ap-southeast-2          # S3 bucket region
+BUCKET_REGION=us-east-1               # S3 bucket region
 OUTPUT_BUCKET_PREFIX=output_json      # Prefix for processed JSON output
 PRODUCT_OUTPUT_FORMAT=markdown        # Format for transaction tables (markdown or html)
 MODEL_ID=us.anthropic.claude-3-5-sonnet-20241022-v2:0  # AWS Bedrock model ID
