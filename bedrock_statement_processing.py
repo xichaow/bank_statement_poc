@@ -213,7 +213,9 @@ class StatementProcessor:
                 self.logger.warning(f"Unknown transaction_output_format: {transaction_output_format}. Defaulting to HTML.")
                 all_tables = "".join([table.to_html() for table in document.tables])
                 transaction_table = all_tables
+            self.logger.info(f"Total transaction_table length: {len(transaction_table)} characters")
             self.logger.info(f"First 500 chars of transaction_table: {transaction_table[:500]}")
+            self.logger.info(f"Last 500 chars of transaction_table: {transaction_table[-500:]}")
         else:
             self.logger.warning("No tables found in document. Falling back to lines of text.")
             # Fallback: extract all lines of text
@@ -232,6 +234,67 @@ class StatementProcessor:
         input_pair['statement_metadata'] = invoice_metadata
         input_pair['transaction_details'] = transaction_table
         return input_pair
+
+    def process_transaction_chunks(self, transaction_details, transaction_prompt):
+        """Process large transaction tables by splitting into chunks"""
+        chunks = self.split_html_table_into_chunks(transaction_details, max_chunk_size=5000)
+        self.logger.info(f"Split transaction table into {len(chunks)} chunks")
+        
+        all_transactions = []
+        for i, chunk in enumerate(chunks):
+            self.logger.info(f"Processing chunk {i+1}/{len(chunks)} with {len(chunk)} characters")
+            try:
+                chunk_prompt = transaction_prompt.format(transaction_details=chunk)
+                chunk_response = self.make_api_call(chunk_prompt, StatementModelTransactions)
+                chunk_transactions = chunk_response.transaction_details
+                all_transactions.extend(chunk_transactions)
+                self.logger.info(f"Chunk {i+1} extracted {len(chunk_transactions)} transactions")
+                time.sleep(2)  # Brief pause between chunks
+            except Exception as e:
+                self.logger.error(f"Failed to process chunk {i+1}: {str(e)}")
+                continue
+        
+        return all_transactions
+
+    def split_html_table_into_chunks(self, html_content, max_chunk_size=5000):
+        """Split HTML table into smaller chunks while preserving table structure"""
+        chunks = []
+        
+        # Find table rows
+        import re
+        rows = re.findall(r'<tr[^>]*>.*?</tr>', html_content, re.DOTALL | re.IGNORECASE)
+        
+        if not rows:
+            # If no table rows found, split by length
+            return [html_content[i:i+max_chunk_size] for i in range(0, len(html_content), max_chunk_size)]
+        
+        # Group rows into chunks
+        current_chunk = "<table>"
+        header_row = ""
+        
+        # Try to find header row (first row)
+        if rows:
+            first_row = rows[0]
+            if 'th>' in first_row.lower() or any(header_word in first_row.lower() for header_word in ['date', 'amount', 'description', 'merchant']):
+                header_row = first_row
+                rows = rows[1:]  # Remove header from processing
+        
+        for row in rows:
+            # Check if adding this row would exceed chunk size
+            potential_chunk = current_chunk + header_row + row + "</table>"
+            
+            if len(potential_chunk) > max_chunk_size and current_chunk != "<table>":
+                # Finalize current chunk
+                chunks.append(current_chunk + header_row + "</table>")
+                current_chunk = "<table>"
+            
+            current_chunk += row
+        
+        # Add the last chunk
+        if current_chunk != "<table>":
+            chunks.append(current_chunk + header_row + "</table>")
+        
+        return chunks
 
     @retry(
         wait=wait_exponential(multiplier=1, min=4, max=60),
@@ -269,10 +332,32 @@ class StatementProcessor:
                 self.logger.debug("Processing input batch")
                 time.sleep(random.uniform(1, 3))
                 metadata = metadata_prompt.format(statement_metadata=input['statement_metadata'])
-                transactions = transaction_prompt.format(transaction_details=input['transaction_details'])
+                
+                # Process metadata first
                 metadata_response = self.make_api_call(metadata, StatementModelMetadata)
-                transaction_response = self.make_api_call(transactions, StatementModelTransactions)
-                merged_response = {**json.loads(metadata_response.model_dump_json()), **json.loads(transaction_response.model_dump_json())}
+                
+                # Handle large transaction tables by chunking
+                transaction_details = input['transaction_details']
+                self.logger.info(f"Processing transaction data with {len(transaction_details)} characters")
+                
+                # If transaction data is large (>6000 chars), split into chunks
+                if len(transaction_details) > 6000:
+                    self.logger.info("Large transaction table detected, using chunking strategy")
+                    all_transactions = self.process_transaction_chunks(transaction_details, transaction_prompt)
+                else:
+                    transactions = transaction_prompt.format(transaction_details=transaction_details)
+                    transaction_response = self.make_api_call(transactions, StatementModelTransactions)
+                    all_transactions = transaction_response.transaction_details
+                
+                self.logger.info(f"Total transactions extracted: {len(all_transactions)}")
+                
+                # Merge responses
+                metadata_dict = json.loads(metadata_response.model_dump_json())
+                merged_response = {
+                    **metadata_dict,
+                    'transaction_details': all_transactions,
+                    'thinking_process_transactions': f"Processed {len(all_transactions)} transactions from transaction table"
+                }
                 all_response.append(merged_response)
                 self.logger.info("Successfully processed input batch")
                 
@@ -472,8 +557,8 @@ class StatementProcessor:
                     # If no transactions, still include the metadata
                     flattened_data.append(metadata)
             df = pd.DataFrame(flattened_data)
-            # Filter out records with confidence_score lower than 2
-            df = df[df['confidence_score'] >= 2]
+            # Filter out records with confidence_score lower than 1 (lowered from 2 to capture more data)
+            df = df[df['confidence_score'] >= 1]
             # Only keep the columns needed for credit card statement analysis
             columns_to_keep = [
                 'confidence_score',
