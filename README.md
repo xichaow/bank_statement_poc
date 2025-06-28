@@ -31,18 +31,26 @@ An automated system for processing credit card statements using AWS Bedrock, Ama
 
 ## Environment Variables
 
-Create a `.env` file with the following configurations:
+Create a `.env` file based on the provided `.env.example` template:
+
+```bash
+cp .env.example .env
+```
+
+Then configure the following variables:
 
 ```
-BUCKET_NAME=your-bucket-name          # S3 bucket for storing statements and output
-PDF_BUCKET_PREFIX=statements          # Prefix for input PDF files
-BUCKET_REGION=us-east-1               # S3 bucket region
-OUTPUT_BUCKET_PREFIX=output_json      # Prefix for processed JSON output
-PRODUCT_OUTPUT_FORMAT=markdown        # Format for transaction tables (markdown or html)
-MODEL_ID=us.anthropic.claude-3-5-sonnet-20241022-v2:0  # AWS Bedrock model ID
-MAX_TOKENS=10000                      # Maximum tokens for model response
-TEMPERATURE=0.0                       # Model temperature (0.0 for consistent output)
-REGION=us-east-1                      # AWS region
+BUCKET_NAME=your-statement-processing-bucket  # S3 bucket for storing statements and output
+PDF_BUCKET_PREFIX=pdfs/                       # Prefix for input PDF files
+BUCKET_REGION=us-east-1                       # S3 bucket region
+OUTPUT_BUCKET_PREFIX=outputs/                 # Prefix for processed JSON output
+PRODUCT_OUTPUT_FORMAT=html                    # Format for transaction tables (html or markdown)
+MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0  # AWS Bedrock model ID
+MAX_TOKENS=4096                               # Maximum tokens for model response
+TEMPERATURE=0.1                               # Model temperature (0.1 for balanced output)
+AWS_REGION=us-east-1                          # AWS region
+MODEL_REGION=us-east-1                        # Model region
+REGION=us-east-1                              # General region
 ```
 
 ## Installation
@@ -56,7 +64,7 @@ REGION=us-east-1                      # AWS region
 ## Usage
 
 1. Configure your AWS credentials and environment variables
-2. Place your PDF credit card statements in the configured S3 bucket under the specified bucket (BUCKET_NAME) and prefix (PDF_BUCKET_PREFIX)
+2. Upload your PDF credit card statements to the configured S3 bucket under the specified prefix (PDF_BUCKET_PREFIX)
 3. Run the processor:
    ```
    python bedrock_statement_processing.py
@@ -112,3 +120,33 @@ The system is designed to handle various credit card statement formats from majo
 - Various card types (Standard, Gold, Platinum, etc.)
 - Different statement layouts and table structures
 - Multiple transaction types and categories
+
+## Security and Data Handling
+
+⚠️ **Important Security Guidelines:**
+
+- **Use Sample Data Only**: This system is designed for processing financial documents. Always use anonymized or sample data for testing and development.
+- **Environment Variables**: Never commit your `.env` file to version control. Use the provided `.env.example` as a template.
+- **AWS Credentials**: Ensure your AWS credentials have appropriate permissions and follow the principle of least privilege.
+- **Data Privacy**: 
+  - Process only documents you have permission to handle
+  - Be aware that processed data may contain sensitive financial information
+  - Consider data retention and deletion policies for your use case
+  - Ensure compliance with relevant data protection regulations (GDPR, CCPA, etc.)
+
+### Excluded Files
+
+The following files are excluded from version control via `.gitignore`:
+- `.env` (environment variables)
+- `logs/` (processing logs)
+- `outputs.csv` (processed data)
+- `output_json/` (JSON outputs)
+- `*.pdf` (input documents)
+
+### Data Anonymization
+
+When sharing or demonstrating this system:
+1. Use sample or anonymized financial documents
+2. Replace real names with placeholder values
+3. Use fake account numbers and transaction details
+4. Remove any personally identifiable information (PII)

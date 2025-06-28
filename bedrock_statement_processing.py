@@ -228,10 +228,10 @@ class StatementProcessor:
         
         # Aggregate all key-values from all pages (if needed)
         if hasattr(document.key_values, 'get_text'):
-            invoice_metadata = document.key_values.get_text()
+            statement_metadata = document.key_values.get_text()
         else:
-            invoice_metadata = "\n".join([kv.get_text() for kv in document.key_values])
-        input_pair['statement_metadata'] = invoice_metadata
+            statement_metadata = "\n".join([kv.get_text() for kv in document.key_values])
+        input_pair['statement_metadata'] = statement_metadata
         input_pair['transaction_details'] = transaction_table
         return input_pair
 
