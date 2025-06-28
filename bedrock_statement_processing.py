@@ -544,13 +544,21 @@ class StatementProcessor:
                 if transactions:
                     for transaction in transactions:
                         row = metadata.copy()
+                        # Handle both dict and Pydantic model objects
+                        if hasattr(transaction, 'model_dump'):
+                            # Pydantic model - convert to dict
+                            transaction_dict = transaction.model_dump()
+                        else:
+                            # Already a dict
+                            transaction_dict = transaction
+                        
                         row.update({
-                            'transaction_date': transaction.get('transaction_date', ''),
-                            'merchant_name': transaction.get('merchant_name', ''),
-                            'transaction_description': transaction.get('transaction_description', ''),
-                            'transaction_amount': transaction.get('transaction_amount', 0.0),
-                            'transaction_type': transaction.get('transaction_type', ''),
-                            'category': transaction.get('category', '')
+                            'transaction_date': transaction_dict.get('transaction_date', ''),
+                            'merchant_name': transaction_dict.get('merchant_name', ''),
+                            'transaction_description': transaction_dict.get('transaction_description', ''),
+                            'transaction_amount': transaction_dict.get('transaction_amount', 0.0),
+                            'transaction_type': transaction_dict.get('transaction_type', ''),
+                            'category': transaction_dict.get('category', '')
                         })
                         flattened_data.append(row)
                 else:
