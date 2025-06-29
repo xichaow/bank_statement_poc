@@ -150,3 +150,7 @@ When sharing or demonstrating this system:
 2. Replace real names with placeholder values
 3. Use fake account numbers and transaction details
 4. Remove any personally identifiable information (PII)
+
+## Reference
+
+https://github.com/australiaitgroup/AI-Engineer-Bootcamp/tree/main/Lecture%2012/invoice_poc
